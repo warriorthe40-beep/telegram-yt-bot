@@ -113,8 +113,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             video_id = match.group(1)
             url = f"https://www.youtube.com/watch?v={video_id}"
             
-            if not context.user_data:
-                context.user_data = {}
+            # Store URL in user_data (don't reassign, just update)
             context.user_data[video_id] = url
             
             logger.info(f"Found YouTube link: {url}")

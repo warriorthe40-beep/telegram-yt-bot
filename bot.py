@@ -1,15 +1,13 @@
-# This is the corrected bot.py file.
-# It switches to an async-native design to fix the 'Event loop is closed' error.
-
 from dotenv import load_dotenv
-load_dotenv() # Load .env file, though Render uses its own env vars
+load_dotenv()
 
 import logging
 import os
 import re
 import asyncio
 import tempfile
-import shutil
+import threading
+import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -22,31 +20,41 @@ from telegram.ext import (
 import yt_dlp
 from flask import Flask, request
 
-# Enable logging
+# Configure logging
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Get Token from environment
+# Get token
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 if not TOKEN:
     raise ValueError("No TELEGRAM_TOKEN environment variable set!")
 
-# Regex to find YouTube video IDs
 YOUTUBE_URL_REGEX = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})'
 
-# --- Utility Functions (Async) ---
+# --- Start a dedicated asyncio event loop in a background thread ---
+def start_asyncio_loop(loop):
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
 
+async_loop = asyncio.new_event_loop()
+t = threading.Thread(target=start_asyncio_loop, args=(async_loop,), daemon=True)
+t.start()
+logger.info("Started background asyncio event loop thread.")
+
+def run_async_task(coro):
+    """Submit a coroutine to the background event loop"""
+    future = asyncio.run_coroutine_threadsafe(coro, async_loop)
+    return future
+
+# --- Utility Functions ---
 async def get_video_info(url: str):
-    """
-    Uses yt-dlp to extract video info without downloading.
-    This is run in a separate thread to avoid blocking asyncio.
-    """
+    """Uses yt-dlp to extract video info without downloading."""
     ydl_opts = {'quiet': True}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Run the blocking ydl.extract_info in a separate thread
             info = await asyncio.to_thread(ydl.extract_info, url, download=False)
             return info
     except Exception as e:
@@ -54,10 +62,7 @@ async def get_video_info(url: str):
         return None
 
 async def download_media(url: str, video_id: str, format_type: str, temp_dir: str):
-    """
-    Downloads and processes the video/audio in a separate thread.
-    Returns the path to the final file.
-    """
+    """Downloads and processes the video/audio. Returns the path to the final file."""
     base_filename = os.path.join(temp_dir, video_id)
     
     if format_type == 'audio':
@@ -86,7 +91,6 @@ async def download_media(url: str, video_id: str, format_type: str, temp_dir: st
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Run the blocking ydl.download in a separate thread
             await asyncio.to_thread(ydl.download, [url])
         
         if os.path.exists(final_path):
@@ -103,8 +107,7 @@ async def download_media(url: str, video_id: str, format_type: str, temp_dir: st
         logger.error(f"Error downloading {url} as {format_type}: {e}")
         return None
 
-# --- Bot Command Handlers (Async) ---
-
+# --- Bot Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a welcome message when the /start command is issued."""
     await update.message.reply_text(
@@ -120,7 +123,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         video_id = match.group(1)
         url = f"https://www.youtube.com/watch?v={video_id}"
         
-        # We can just write to user_data, it will be created if it doesn't exist.
+        if not context.user_data:
+            context.user_data = {}
         context.user_data[video_id] = url
         
         logger.info(f"Found YouTube link: {url}")
@@ -184,22 +188,25 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
             await query.edit_message_text(f"Uploading {format_type}...")
             
+            # Use context managers for file handles
             if format_type == 'audio':
-                await update.effective_message.reply_audio(
-                    audio=open(final_path, 'rb'),
-                    title=title,
-                    duration=duration
-                )
+                with open(final_path, 'rb') as f:
+                    await update.effective_message.reply_audio(
+                        audio=f,
+                        title=title,
+                        duration=duration
+                    )
             else:
                 width = info.get('width', 0)
                 height = info.get('height', 0)
-                await update.effective_message.reply_video(
-                    video=open(final_path, 'rb'),
-                    title=title,
-                    duration=duration,
-                    width=width,
-                    height=height
-                )
+                with open(final_path, 'rb') as f:
+                    await update.effective_message.reply_video(
+                        video=f,
+                        title=title,
+                        duration=duration,
+                        width=width,
+                        height=height
+                    )
             
             await query.delete_message()
 
@@ -208,65 +215,85 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         try:
             await query.edit_message_text(f"An unexpected error occurred. Please try again.")
         except:
-            pass # Message might have been deleted
+            pass
 
-# --- Webhook Setup ---
-
-# Set up the PTB application
+# --- Initialize Telegram Bot Application ---
 ptb_app = Application.builder().token(TOKEN).build()
 ptb_app.add_handler(CommandHandler("start", start))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 ptb_app.add_handler(CallbackQueryHandler(button_click))
 
-# Set up the Flask app (this is the web server)
+# Initialize the application synchronously before Flask starts
+logger.info("Initializing Telegram bot application...")
+init_future = run_async_task(ptb_app.initialize())
+# Wait for initialization to complete (with timeout)
+try:
+    init_future.result(timeout=10)
+    logger.info("Telegram bot application initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize bot application: {e}", exc_info=True)
+    raise
+
+# --- Flask App ---
 app = Flask(__name__)
 
 @app.route("/")
 def index():
-    """A simple health check endpoint for Render."""
     return "Hello, I am your bot and I am running!"
 
 @app.route(f"/{TOKEN}", methods=["POST"])
-async def webhook():
-    """
-    This is the main webhook endpoint.
-    It is now async and can be 'awaited'.
-    """
-    update_json = request.get_json(force=True)
-    update = Update.de_json(update_json, ptb_app.bot)
-    logger.info(f"Received update {update.update_id}")
-    
-    # We await the async process_update function directly
-    await ptb_app.process_update(update)
-    
-    return "ok", 200
+def webhook():
+    """Handle incoming webhook updates from Telegram"""
+    try:
+        update_json = request.get_json(force=True)
+        update = Update.de_json(update_json, ptb_app.bot)
+        logger.info(f"Received update {update.update_id}")
+        run_async_task(ptb_app.process_update(update))
+        return "ok", 200
+    except Exception as e:
+        logger.error(f"Error processing webhook: {e}", exc_info=True)
+        return "error", 500
 
 @app.route("/set_webhook")
-async def set_webhook():
-    """
-    This is the one-time endpoint to set the webhook.
-    It is now async and can be 'awaited'.
-    """
-    # We must initialize the application here, once.
-    await ptb_app.initialize()
-    
-    render_url = os.environ.get("RENDER_EXTERNAL_URL")
-    if not render_url:
-        logger.error("RENDER_EXTERNAL_URL environment variable not found.")
-        return "Error: RENDER_EXTERNAL_URL environment variable not found.", 500
+def set_webhook():
+    """Set the webhook URL for Telegram to send updates to"""
+    try:
+        render_url = os.environ.get("RENDER_EXTERNAL_URL")
+        if not render_url:
+            logger.error("RENDER_EXTERNAL_URL environment variable not found.")
+            return "Error: RENDER_EXTERNAL_URL environment variable not found.", 500
 
-    webhook_url = f"{render_url}/{TOKEN}"
-    
-    # We await the async set_webhook function directly
-    set_ok = await ptb_app.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES)
-    
-    if set_ok:
-        logger.info(f"Webhook set successfully to {webhook_url}")
-        return f"Webhook set successfully to {webhook_url}", 200
-    else:
-        logger.error("Failed to set webhook.")
-        return "Error: Failed to set webhook.", 500
+        webhook_url = f"{render_url}/{TOKEN}"
+        telegram_api_url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
+        
+        logger.info(f"Setting webhook to: {webhook_url}")
+        
+        response = requests.post(
+            telegram_api_url,
+            json={
+                'url': webhook_url,
+                'allowed_updates': ['message', 'callback_query']
+            },
+            timeout=10
+        )
+        response.raise_for_status()
+        
+        response_json = response.json()
+        if response_json.get("ok"):
+            logger.info(f"Webhook set successfully to {webhook_url}")
+            return f"Webhook set successfully to {webhook_url}", 200
+        else:
+            error_msg = response_json.get('description', 'Unknown error')
+            logger.error(f"Failed to set webhook: {error_msg}")
+            return f"Error: Failed to set webhook. {error_msg}", 500
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error setting webhook via requests: {e}", exc_info=True)
+        return f"Internal server error setting webhook: {str(e)}", 500
+    except Exception as e:
+        logger.error(f"General error in set_webhook: {e}", exc_info=True)
+        return f"Internal server error: {str(e)}", 500
 
-# Note: We do not run `ptb_app.run_polling()`
-# The ASGI server (Hypercorn) will run the Flask `app` object.
-
+if __name__ == "__main__":
+    # For local testing only
+    app.run(host="0.0.0.0", port=5000, debug=True)

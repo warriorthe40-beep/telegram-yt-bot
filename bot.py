@@ -101,29 +101,38 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles incoming text messages to find YouTube links."""
-    message_text = update.message.text
-    match = re.search(YOUTUBE_URL_REGEX, message_text)
-    
-    if match:
-        video_id = match.group(1)
-        url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        logger.info(f"Handling message from user {update.effective_user.id}")
         
-        if not context.user_data:
-            context.user_data = {}
-        context.user_data[video_id] = url
+        message_text = update.message.text
+        logger.info(f"Message text: {message_text}")
         
-        logger.info(f"Found YouTube link: {url}")
+        match = re.search(YOUTUBE_URL_REGEX, message_text)
         
-        keyboard = [
-            [
-                InlineKeyboardButton("Download Audio (MP3)", callback_data=f"a:{video_id}"),
-                InlineKeyboardButton("Download Video (MP4)", callback_data=f"v:{video_id}"),
+        if match:
+            video_id = match.group(1)
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            
+            if not context.user_data:
+                context.user_data = {}
+            context.user_data[video_id] = url
+            
+            logger.info(f"Found YouTube link: {url}")
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("Download Audio (MP3)", callback_data=f"a:{video_id}"),
+                    InlineKeyboardButton("Download Video (MP4)", callback_data=f"v:{video_id}"),
+                ]
             ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("What format would you like?", reply_markup=reply_markup)
-    else:
-        await update.message.reply_text("Please send a valid YouTube link.")
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("What format would you like?", reply_markup=reply_markup)
+        else:
+            await update.message.reply_text("Please send a valid YouTube link.")
+            
+    except Exception as e:
+        logger.error(f"Error in handle_message: {e}", exc_info=True)
+        raise
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Parses the CallbackQuery and initiates the download."""
@@ -202,12 +211,27 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except:
             pass
 
+# --- Error handler ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log errors caused by updates."""
+    logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
+    
+    # Try to notify the user
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "Sorry, an error occurred while processing your request. Please try again."
+            )
+        except Exception as e:
+            logger.error(f"Could not send error message to user: {e}")
+
 # --- Initialize Telegram Bot Application ---
 logger.info("Building Telegram bot application...")
 ptb_app = Application.builder().token(TOKEN).build()
 ptb_app.add_handler(CommandHandler("start", start))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 ptb_app.add_handler(CallbackQueryHandler(button_click))
+ptb_app.add_error_handler(error_handler)
 
 # --- Flask App ---
 app = Flask(__name__)

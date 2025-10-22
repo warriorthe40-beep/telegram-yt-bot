@@ -1,5 +1,8 @@
+# This is the corrected bot.py file.
+# It fixes the "Internal Server Error" by correctly handling asyncio.
+
 from dotenv import load_dotenv
-load_dotenv() # This is still useful if you ever run locally, but Render uses env vars
+load_dotenv() # Load .env file, though Render uses its own env vars
 
 import logging
 import os
@@ -43,6 +46,7 @@ async def get_video_info(url: str):
     ydl_opts = {'quiet': True}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Run the blocking ydl.extract_info in a separate thread
             info = await asyncio.to_thread(ydl.extract_info, url, download=False)
             return info
     except Exception as e:
@@ -82,11 +86,17 @@ async def download_media(url: str, video_id: str, format_type: str, temp_dir: st
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Run the blocking ydl.download in a separate thread
             await asyncio.to_thread(ydl.download, [url])
         
         if os.path.exists(final_path):
             return final_path
         else:
+            # Sometimes the file has a slightly different extension
+            for f in os.listdir(temp_dir):
+                if f.startswith(video_id) and f.endswith(('.mp3', '.mp4')):
+                    os.rename(os.path.join(temp_dir, f), final_path)
+                    return final_path
             logger.error(f"Expected file {final_path} not found after download.")
             return None
     except Exception as e:
@@ -196,7 +206,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     except Exception as e:
         logger.error(f"Main processing error for {url}: {e}", exc_info=True)
-        await query.edit_message_text(f"An unexpected error occurred: {e}")
+        try:
+            await query.edit_message_text(f"An unexpected error occurred. Please try again.")
+        except:
+            pass # Message might have been deleted
 
 # --- Webhook Setup ---
 
@@ -206,7 +219,7 @@ ptb_app.add_handler(CommandHandler("start", start))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 ptb_app.add_handler(CallbackQueryHandler(button_click))
 
-# Set up the Flask app
+# Set up the Flask app (this is the web server)
 app = Flask(__name__)
 
 @app.route("/")
@@ -215,17 +228,26 @@ def index():
     return "Hello, I am your bot and I am running!"
 
 @app.route(f"/{TOKEN}", methods=["POST"])
-async def webhook():
-    """The main webhook endpoint. Receives updates from Telegram."""
+def webhook():
+    """
+    This is the main webhook endpoint.
+    It is NOT async, but it calls an async function.
+    """
     update_json = request.get_json(force=True)
     update = Update.de_json(update_json, ptb_app.bot)
     logger.info(f"Received update {update.update_id}")
-    await ptb_app.process_update(update)
+    
+    # Run the async process_update function in a blocking way
+    asyncio.run(ptb_app.process_update(update))
+    
     return "ok", 200
 
 @app.route("/set_webhook")
-async def set_webhook():
-    """A one-time endpoint to set the webhook."""
+def set_webhook():
+    """
+    This is the one-time endpoint to set the webhook.
+    It is NOT async, but it calls an async function.
+    """
     # RENDER_EXTERNAL_URL is automatically set by Render
     render_url = os.environ.get("RENDER_EXTERNAL_URL")
     if not render_url:
@@ -233,7 +255,9 @@ async def set_webhook():
         return "Error: RENDER_EXTERNAL_URL environment variable not found.", 500
 
     webhook_url = f"{render_url}/{TOKEN}"
-    set_ok = await ptb_app.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES)
+    
+    # Run the async set_webhook function in a blocking way
+    set_ok = asyncio.run(ptb_app.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES))
     
     if set_ok:
         logger.info(f"Webhook set successfully to {webhook_url}")

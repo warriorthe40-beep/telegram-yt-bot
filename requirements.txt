@@ -2,4 +2,4 @@ python-telegram-bot
 yt-dlp
 python-dotenv
 Flask
-hypercorn
+gunicorn

@@ -1,5 +1,5 @@
 # This is the corrected bot.py file.
-# It fixes the "Internal Server Error" by correctly handling asyncio.
+# It fixes the "RuntimeError: This application was not initialized" error.
 
 from dotenv import load_dotenv
 load_dotenv() # Load .env file, though Render uses its own env vars
@@ -218,6 +218,13 @@ ptb_app = Application.builder().token(TOKEN).build()
 ptb_app.add_handler(CommandHandler("start", start))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 ptb_app.add_handler(CallbackQueryHandler(button_click))
+
+# *** THIS IS THE FIX ***
+# Initialize the application asynchronously *before* setting up the web server
+logger.info("Initializing PTB Application...")
+asyncio.run(ptb_app.initialize())
+logger.info("PTB Application Initialized.")
+
 
 # Set up the Flask app (this is the web server)
 app = Flask(__name__)

@@ -8,7 +8,7 @@ import asyncio
 import tempfile
 import threading
 import requests
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -33,21 +33,6 @@ if not TOKEN:
     raise ValueError("No TELEGRAM_TOKEN environment variable set!")
 
 YOUTUBE_URL_REGEX = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})'
-
-# --- Start a dedicated asyncio event loop in a background thread ---
-def start_asyncio_loop(loop):
-    asyncio.set_event_loop(loop)
-    loop.run_forever()
-
-async_loop = asyncio.new_event_loop()
-t = threading.Thread(target=start_asyncio_loop, args=(async_loop,), daemon=True)
-t.start()
-logger.info("Started background asyncio event loop thread.")
-
-def run_async_task(coro):
-    """Submit a coroutine to the background event loop"""
-    future = asyncio.run_coroutine_threadsafe(coro, async_loop)
-    return future
 
 # --- Utility Functions ---
 async def get_video_info(url: str):
@@ -218,24 +203,30 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             pass
 
 # --- Initialize Telegram Bot Application ---
+logger.info("Building Telegram bot application...")
 ptb_app = Application.builder().token(TOKEN).build()
 ptb_app.add_handler(CommandHandler("start", start))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 ptb_app.add_handler(CallbackQueryHandler(button_click))
 
-# Initialize the application synchronously before Flask starts
-logger.info("Initializing Telegram bot application...")
-init_future = run_async_task(ptb_app.initialize())
-# Wait for initialization to complete (with timeout)
-try:
-    init_future.result(timeout=10)
-    logger.info("Telegram bot application initialized successfully")
-except Exception as e:
-    logger.error(f"Failed to initialize bot application: {e}", exc_info=True)
-    raise
-
 # --- Flask App ---
 app = Flask(__name__)
+
+@app.before_request
+def init_bot():
+    """Initialize bot before first request"""
+    if not hasattr(app, 'bot_initialized'):
+        logger.info("Initializing bot on first request...")
+        try:
+            # Run initialization in the app's own event loop
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(ptb_app.initialize())
+            app.bot_initialized = True
+            logger.info("Bot initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize bot: {e}", exc_info=True)
+            app.bot_initialized = False
 
 @app.route("/")
 def index():
@@ -245,14 +236,36 @@ def index():
 def webhook():
     """Handle incoming webhook updates from Telegram"""
     try:
+        logger.info("Webhook endpoint hit")
+        
+        # Get the update
         update_json = request.get_json(force=True)
+        if not update_json:
+            logger.error("No JSON data in webhook request")
+            return "no data", 400
+        
+        logger.info(f"Received update: {update_json.get('update_id', 'unknown')}")
+        
+        # Process the update
         update = Update.de_json(update_json, ptb_app.bot)
-        logger.info(f"Received update {update.update_id}")
-        run_async_task(ptb_app.process_update(update))
+        
+        # Create a new event loop for this request
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            # Process the update synchronously in this loop
+            loop.run_until_complete(ptb_app.process_update(update))
+            logger.info(f"Update {update.update_id} processed successfully")
+        finally:
+            loop.close()
+        
         return "ok", 200
+        
     except Exception as e:
         logger.error(f"Error processing webhook: {e}", exc_info=True)
-        return "error", 500
+        # Return 200 anyway to prevent Telegram from retrying
+        return "error logged", 200
 
 @app.route("/set_webhook")
 def set_webhook():

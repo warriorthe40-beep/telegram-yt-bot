@@ -37,7 +37,12 @@ YOUTUBE_URL_REGEX = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu
 # --- Utility Functions ---
 async def get_video_info(url: str):
     """Uses yt-dlp to extract video info without downloading."""
-    ydl_opts = {'quiet': True}
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': False,
+        # Add these options to help bypass YouTube's bot detection
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+    }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = await asyncio.to_thread(ydl.extract_info, url, download=False)
@@ -50,8 +55,16 @@ async def download_media(url: str, video_id: str, format_type: str, temp_dir: st
     """Downloads and processes the video/audio. Returns the path to the final file."""
     base_filename = os.path.join(temp_dir, video_id)
     
+    # Base options for bypassing bot detection
+    base_opts = {
+        'quiet': True,
+        'no_warnings': False,
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+    }
+    
     if format_type == 'audio':
         ydl_opts = {
+            **base_opts,
             'format': 'bestaudio/best',
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
@@ -59,18 +72,17 @@ async def download_media(url: str, video_id: str, format_type: str, temp_dir: st
                 'preferredquality': '192',
             }],
             'outtmpl': f"{base_filename}.%(ext)s",
-            'quiet': True,
         }
         final_path = f"{base_filename}.mp3"
     else:  # video
         ydl_opts = {
+            **base_opts,
             'format': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best[height<=720]',
             'postprocessors': [{
                 'key': 'FFmpegVideoConvertor',
                 'preferedformat': 'mp4',
             }],
             'outtmpl': f"{base_filename}.%(ext)s",
-            'quiet': True,
         }
         final_path = f"{base_filename}.mp4"
 

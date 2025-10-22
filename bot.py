@@ -27,16 +27,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Get token
+# Get token and optional cookies
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 if not TOKEN:
     raise ValueError("No TELEGRAM_TOKEN environment variable set!")
 
+# Optional: YouTube cookies to bypass bot detection
+YOUTUBE_COOKIES = os.environ.get("YOUTUBE_COOKIES", "")
+
 YOUTUBE_URL_REGEX = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})'
+
+def get_cookies_path():
+    """Create a temporary cookies file from environment variable if provided"""
+    if not YOUTUBE_COOKIES:
+        return None
+    
+    # Create a temporary file with the cookies
+    cookies_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt')
+    cookies_file.write(YOUTUBE_COOKIES)
+    cookies_file.close()
+    return cookies_file.name
 
 # --- Utility Functions ---
 async def get_video_info(url: str):
     """Uses yt-dlp to extract video info without downloading."""
+    cookies_path = get_cookies_path()
+    
     ydl_opts = {
         'quiet': True,
         'no_warnings': False,
@@ -55,6 +71,12 @@ async def get_video_info(url: str):
             'Sec-Fetch-Mode': 'navigate',
         },
     }
+    
+    # Add cookies if available
+    if cookies_path:
+        ydl_opts['cookiefile'] = cookies_path
+        logger.info("Using cookies for YouTube authentication")
+    
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = await asyncio.to_thread(ydl.extract_info, url, download=False)
@@ -62,17 +84,40 @@ async def get_video_info(url: str):
     except Exception as e:
         logger.error(f"Error extracting info for {url}: {e}")
         return None
+    finally:
+        # Clean up temporary cookies file
+        if cookies_path and os.path.exists(cookies_path):
+            try:
+                os.unlink(cookies_path)
+            except:
+                pass
 
 async def download_media(url: str, video_id: str, format_type: str, temp_dir: str):
     """Downloads and processes the video/audio. Returns the path to the final file."""
     base_filename = os.path.join(temp_dir, video_id)
+    cookies_path = get_cookies_path()
     
     # Base options for bypassing bot detection
     base_opts = {
         'quiet': True,
         'no_warnings': False,
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web', 'ios'],
+                'skip': ['translated_subs', 'hls', 'dash']
+            }
+        },
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-us,en;q=0.5',
+            'Sec-Fetch-Mode': 'navigate',
+        },
     }
+    
+    # Add cookies if available
+    if cookies_path:
+        base_opts['cookiefile'] = cookies_path
     
     if format_type == 'audio':
         ydl_opts = {
@@ -115,6 +160,13 @@ async def download_media(url: str, video_id: str, format_type: str, temp_dir: st
     except Exception as e:
         logger.error(f"Error downloading {url} as {format_type}: {e}")
         return None
+    finally:
+        # Clean up temporary cookies file
+        if cookies_path and os.path.exists(cookies_path):
+            try:
+                os.unlink(cookies_path)
+            except:
+                pass
 
 # --- Bot Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -1,5 +1,5 @@
 # This is the corrected bot.py file.
-# It fixes the "RuntimeError: This application was not initialized" error.
+# It fixes the "AttributeError: You can not assign a new value to user_data" error.
 
 from dotenv import load_dotenv
 load_dotenv() # Load .env file, though Render uses its own env vars
@@ -120,8 +120,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         video_id = match.group(1)
         url = f"https://www.youtube.com/watch?v={video_id}"
         
-        if not context.user_data:
-            context.user_data = {}
+        # *** THIS IS THE FIX ***
+        # We don't need to initialize user_data, we can just write to it.
+        # The line `context.user_data = {}` was causing the crash.
         context.user_data[video_id] = url
         
         logger.info(f"Found YouTube link: {url}")
@@ -219,7 +220,6 @@ ptb_app.add_handler(CommandHandler("start", start))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 ptb_app.add_handler(CallbackQueryHandler(button_click))
 
-# *** THIS IS THE FIX ***
 # Initialize the application asynchronously *before* setting up the web server
 logger.info("Initializing PTB Application...")
 asyncio.run(ptb_app.initialize())

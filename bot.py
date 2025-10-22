@@ -1,5 +1,5 @@
 # This is the corrected bot.py file.
-# It fixes the "AttributeError: You can not assign a new value to user_data" error.
+# It switches to an async-native design to fix the 'Event loop is closed' error.
 
 from dotenv import load_dotenv
 load_dotenv() # Load .env file, though Render uses its own env vars
@@ -120,9 +120,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         video_id = match.group(1)
         url = f"https://www.youtube.com/watch?v={video_id}"
         
-        # *** THIS IS THE FIX ***
-        # We don't need to initialize user_data, we can just write to it.
-        # The line `context.user_data = {}` was causing the crash.
+        # We can just write to user_data, it will be created if it doesn't exist.
         context.user_data[video_id] = url
         
         logger.info(f"Found YouTube link: {url}")
@@ -220,12 +218,6 @@ ptb_app.add_handler(CommandHandler("start", start))
 ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 ptb_app.add_handler(CallbackQueryHandler(button_click))
 
-# Initialize the application asynchronously *before* setting up the web server
-logger.info("Initializing PTB Application...")
-asyncio.run(ptb_app.initialize())
-logger.info("PTB Application Initialized.")
-
-
 # Set up the Flask app (this is the web server)
 app = Flask(__name__)
 
@@ -235,27 +227,29 @@ def index():
     return "Hello, I am your bot and I am running!"
 
 @app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
+async def webhook():
     """
     This is the main webhook endpoint.
-    It is NOT async, but it calls an async function.
+    It is now async and can be 'awaited'.
     """
     update_json = request.get_json(force=True)
     update = Update.de_json(update_json, ptb_app.bot)
     logger.info(f"Received update {update.update_id}")
     
-    # Run the async process_update function in a blocking way
-    asyncio.run(ptb_app.process_update(update))
+    # We await the async process_update function directly
+    await ptb_app.process_update(update)
     
     return "ok", 200
 
 @app.route("/set_webhook")
-def set_webhook():
+async def set_webhook():
     """
     This is the one-time endpoint to set the webhook.
-    It is NOT async, but it calls an async function.
+    It is now async and can be 'awaited'.
     """
-    # RENDER_EXTERNAL_URL is automatically set by Render
+    # We must initialize the application here, once.
+    await ptb_app.initialize()
+    
     render_url = os.environ.get("RENDER_EXTERNAL_URL")
     if not render_url:
         logger.error("RENDER_EXTERNAL_URL environment variable not found.")
@@ -263,8 +257,8 @@ def set_webhook():
 
     webhook_url = f"{render_url}/{TOKEN}"
     
-    # Run the async set_webhook function in a blocking way
-    set_ok = asyncio.run(ptb_app.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES))
+    # We await the async set_webhook function directly
+    set_ok = await ptb_app.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES)
     
     if set_ok:
         logger.info(f"Webhook set successfully to {webhook_url}")
@@ -274,5 +268,5 @@ def set_webhook():
         return "Error: Failed to set webhook.", 500
 
 # Note: We do not run `ptb_app.run_polling()`
-# Gunicorn will run the Flask `app` object (`gunicorn bot:app`)
+# The ASGI server (Hypercorn) will run the Flask `app` object.
 

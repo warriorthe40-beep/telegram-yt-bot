@@ -272,16 +272,19 @@ def webhook():
         # Process the update
         update = Update.de_json(update_json, ptb_app.bot)
         
-        # Create a new event loop for this request
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
+        # Check if there's already a running loop
         try:
-            # Process the update synchronously in this loop
-            loop.run_until_complete(ptb_app.process_update(update))
-            logger.info(f"Update {update.update_id} processed successfully")
-        finally:
-            loop.close()
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Process the update in this loop
+        loop.run_until_complete(ptb_app.process_update(update))
+        logger.info(f"Update {update.update_id} processed successfully")
         
         return "ok", 200
         

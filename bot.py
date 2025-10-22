@@ -271,11 +271,9 @@ def webhook():
 def set_webhook():
     """Set the webhook URL for Telegram to send updates to"""
     try:
-        render_url = os.environ.get("RENDER_EXTERNAL_URL")
-        if not render_url:
-            logger.error("RENDER_EXTERNAL_URL environment variable not found.")
-            return "Error: RENDER_EXTERNAL_URL environment variable not found.", 500
-
+        # Use the provided Render URL or fallback to environment variable
+        render_url = "https://delight-yt-bot.onrender.com"
+        
         webhook_url = f"{render_url}/{TOKEN}"
         telegram_api_url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
         

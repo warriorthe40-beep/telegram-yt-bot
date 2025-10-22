@@ -40,8 +40,20 @@ async def get_video_info(url: str):
     ydl_opts = {
         'quiet': True,
         'no_warnings': False,
-        # Add these options to help bypass YouTube's bot detection
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+        # Try to bypass YouTube's bot detection
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web', 'ios'],
+                'skip': ['translated_subs', 'hls', 'dash']
+            }
+        },
+        # Spoof user agent
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-us,en;q=0.5',
+            'Sec-Fetch-Mode': 'navigate',
+        },
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

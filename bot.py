@@ -1,3 +1,8 @@
+# This file is a combination of your code and my stable server logic.
+# 1. It fixes the IndentationErrors from your new file.
+# 2. It keeps the 'tv_embedded' fix for yt-dlp.
+# 3. It uses the stable background-thread model to prevent "Internal Server Error".
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -8,8 +13,7 @@ import asyncio
 import tempfile
 import threading
 import requests
-import random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -35,17 +39,34 @@ if not TOKEN:
 
 YOUTUBE_URL_REGEX = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})'
 
+# --- Start a dedicated asyncio event loop in a background thread ---
+# This is a stable way to mix asyncio (the bot) with Flask (the server)
+def start_asyncio_loop(loop):
+    """Sets the event loop for the new thread and runs it forever."""
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+async_loop = asyncio.new_event_loop()
+t = threading.Thread(target=start_asyncio_loop, args=(async_loop,), daemon=True)
+t.start()
+logger.info("Started background asyncio event loop thread.")
+
+def run_async_task(coro):
+    """Schedules a coroutine to run in the background event loop."""
+    asyncio.run_coroutine_threadsafe(coro, async_loop)
+# ---
+
 # --- Utility Functions ---
 async def get_video_info(url: str):
     """Uses yt-dlp to extract video info without downloading."""
     
+    # This is the fix from your code to help with restricted videos
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
-        # Use tv_embedded client - designed to bypass restrictions
         'extractor_args': {
             'youtube': {
-                'player_client': ['tv_embedded'],
+                'player_client': ['tv_embedded', 'android_creator'], # Added a second fallback
             }
         },
     }
@@ -56,19 +77,20 @@ async def get_video_info(url: str):
             return info
     except Exception as e:
         logger.error(f"Error extracting info for {url}: {e}")
+        # This is where your screenshot error comes from
         return None
 
 async def download_media(url: str, video_id: str, format_type: str, temp_dir: str):
     """Downloads and processes the video/audio. Returns the path to the final file."""
     base_filename = os.path.join(temp_dir, video_id)
     
-    # Base options
+    # Base options (from your code)
     base_opts = {
         'quiet': True,
         'no_warnings': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['tv_embedded'],
+                'player_client': ['tv_embedded', 'android_creator'], # Added a second fallback
             }
         },
     }
@@ -136,7 +158,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             video_id = match.group(1)
             url = f"https://www.youtube.com/watch?v={video_id}"
             
-            # Store URL in user_data (don't reassign, just update)
+            # Store URL in user_data
+            if not context.user_data:
+                context.user_data = {} # Ensure user_data exists
             context.user_data[video_id] = url
             
             logger.info(f"Found YouTube link: {url}")
@@ -154,6 +178,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             
     except Exception as e:
         logger.error(f"Error in handle_message: {e}", exc_info=True)
+        # We raise it to be caught by the main error handler
         raise
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -180,7 +205,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         info = await get_video_info(url)
         if not info:
-            await query.edit_message_text("Error: Could not get video information.")
+            # The error from your screenshot would be caught here
+            await query.edit_message_text("Error: Could not get video information. The video may be private or age-restricted.")
             return
 
         title = info.get('title', 'Downloaded Media')
@@ -255,24 +281,11 @@ ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messa
 ptb_app.add_handler(CallbackQueryHandler(button_click))
 ptb_app.add_error_handler(error_handler)
 
+# Initialize the ptb_app in the background event loop
+run_async_task(ptb_app.initialize())
+
 # --- Flask App ---
 app = Flask(__name__)
-
-@app.before_request
-def init_bot():
-    """Initialize bot before first request"""
-    if not hasattr(app, 'bot_initialized'):
-        logger.info("Initializing bot on first request...")
-        try:
-            # Run initialization in the app's own event loop
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(ptb_app.initialize())
-            app.bot_initialized = True
-            logger.info("Bot initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize bot: {e}", exc_info=True)
-            app.bot_initialized = False
 
 @app.route("/")
 def index():
@@ -284,7 +297,6 @@ def webhook():
     try:
         logger.info("Webhook endpoint hit")
         
-        # Get the update
         update_json = request.get_json(force=True)
         if not update_json:
             logger.error("No JSON data in webhook request")
@@ -292,22 +304,10 @@ def webhook():
         
         logger.info(f"Received update: {update_json.get('update_id', 'unknown')}")
         
-        # Process the update
         update = Update.de_json(update_json, ptb_app.bot)
         
-        # Check if there's already a running loop
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_closed():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        # Process the update in this loop
-        loop.run_until_complete(ptb_app.process_update(update))
-        logger.info(f"Update {update.update_id} processed successfully")
+        # Schedule process_update in the background event loop
+        run_async_task(ptb_app.process_update(update))
         
         return "ok", 200
         
@@ -320,7 +320,7 @@ def webhook():
 def set_webhook():
     """Set the webhook URL for Telegram to send updates to"""
     try:
-        # Use the provided Render URL or fallback to environment variable
+        # This is the hardcoded URL from your file
         render_url = "https://delight-yt-bot.onrender.com"
         
         webhook_url = f"{render_url}/{TOKEN}"
@@ -356,4 +356,6 @@ def set_webhook():
 
 if __name__ == "__main__":
     # For local testing only
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    logger.warning("Do not run this locally for production. Use Gunicorn.")
+    ptb_app.run_polling() # Use polling for local testing
+

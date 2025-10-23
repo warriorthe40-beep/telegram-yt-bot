@@ -55,20 +55,11 @@ async def get_video_info(url: str):
     ydl_opts = {
         'quiet': True,
         'no_warnings': False,
-        # Use oauth2 authentication instead of cookies
-        'username': 'oauth2',
-        'password': '',
-        # Spoof user agent
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-us,en;q=0.5',
-            'Sec-Fetch-Mode': 'navigate',
-        },
+        # Use android_creator client which bypasses most restrictions
         'extractor_args': {
             'youtube': {
-                'player_client': ['android_creator'],  # Try Android creator client
-                'skip': ['dash', 'hls']
+                'player_client': ['android_creator', 'mediaconnect'],
+                'skip': ['dash', 'hls', 'translated_subs']
             }
         },
     }
@@ -84,34 +75,18 @@ async def get_video_info(url: str):
 async def download_media(url: str, video_id: str, format_type: str, temp_dir: str):
     """Downloads and processes the video/audio. Returns the path to the final file."""
     base_filename = os.path.join(temp_dir, video_id)
-    cookies_path = get_cookies_path()
     
     # Base options for bypassing bot detection
     base_opts = {
         'quiet': True,
         'no_warnings': False,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-us,en;q=0.5',
-            'Sec-Fetch-Mode': 'navigate',
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android_creator', 'mediaconnect'],
+                'skip': ['dash', 'hls', 'translated_subs']
+            }
         },
     }
-    
-    # Add cookies if available (only use web client with cookies)
-    if cookies_path:
-        base_opts['cookiefile'] = cookies_path
-        base_opts['extractor_args'] = {
-            'youtube': {
-                'player_client': ['web'],
-            }
-        }
-    else:
-        base_opts['extractor_args'] = {
-            'youtube': {
-                'player_client': ['android', 'ios'],
-            }
-        }
     
     if format_type == 'audio':
         ydl_opts = {
@@ -154,13 +129,6 @@ async def download_media(url: str, video_id: str, format_type: str, temp_dir: st
     except Exception as e:
         logger.error(f"Error downloading {url} as {format_type}: {e}")
         return None
-    finally:
-        # Clean up temporary cookies file
-        if cookies_path and os.path.exists(cookies_path):
-            try:
-                os.unlink(cookies_path)
-            except:
-                pass
 
 # --- Bot Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

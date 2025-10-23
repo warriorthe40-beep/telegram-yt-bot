@@ -51,18 +51,13 @@ def get_cookies_path():
 # --- Utility Functions ---
 async def get_video_info(url: str):
     """Uses yt-dlp to extract video info without downloading."""
-    cookies_path = get_cookies_path()
     
     ydl_opts = {
         'quiet': True,
         'no_warnings': False,
-        # Try to bypass YouTube's bot detection
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web', 'ios'],
-                'skip': ['translated_subs', 'hls', 'dash']
-            }
-        },
+        # Use oauth2 authentication instead of cookies
+        'username': 'oauth2',
+        'password': '',
         # Spoof user agent
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -70,12 +65,13 @@ async def get_video_info(url: str):
             'Accept-Language': 'en-us,en;q=0.5',
             'Sec-Fetch-Mode': 'navigate',
         },
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android_creator'],  # Try Android creator client
+                'skip': ['dash', 'hls']
+            }
+        },
     }
-    
-    # Add cookies if available
-    if cookies_path:
-        ydl_opts['cookiefile'] = cookies_path
-        logger.info("Using cookies for YouTube authentication")
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -84,13 +80,6 @@ async def get_video_info(url: str):
     except Exception as e:
         logger.error(f"Error extracting info for {url}: {e}")
         return None
-    finally:
-        # Clean up temporary cookies file
-        if cookies_path and os.path.exists(cookies_path):
-            try:
-                os.unlink(cookies_path)
-            except:
-                pass
 
 async def download_media(url: str, video_id: str, format_type: str, temp_dir: str):
     """Downloads and processes the video/audio. Returns the path to the final file."""
@@ -101,12 +90,6 @@ async def download_media(url: str, video_id: str, format_type: str, temp_dir: st
     base_opts = {
         'quiet': True,
         'no_warnings': False,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web', 'ios'],
-                'skip': ['translated_subs', 'hls', 'dash']
-            }
-        },
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -115,9 +98,20 @@ async def download_media(url: str, video_id: str, format_type: str, temp_dir: st
         },
     }
     
-    # Add cookies if available
+    # Add cookies if available (only use web client with cookies)
     if cookies_path:
         base_opts['cookiefile'] = cookies_path
+        base_opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['web'],
+            }
+        }
+    else:
+        base_opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['android', 'ios'],
+            }
+        }
     
     if format_type == 'audio':
         ydl_opts = {

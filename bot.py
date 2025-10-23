@@ -53,15 +53,17 @@ async def get_video_info(url: str):
     """Uses yt-dlp to extract video info without downloading."""
     
     ydl_opts = {
-        'quiet': True,
+        'quiet': False,  # Show warnings to debug
         'no_warnings': False,
-        # Use android_creator client which bypasses most restrictions
+        # Try multiple clients in order of preference
         'extractor_args': {
             'youtube': {
-                'player_client': ['android_creator', 'mediaconnect'],
-                'skip': ['dash', 'hls', 'translated_subs']
+                'player_client': ['ios', 'mweb'],  # iOS and mobile web work best
             }
         },
+        # Add some delays to avoid rate limiting
+        'sleep_interval': 1,
+        'max_sleep_interval': 3,
     }
     
     try:

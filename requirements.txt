@@ -4,4 +4,3 @@ python-dotenv
 Flask
 gunicorn
 requests
-aiohttp

@@ -28,81 +28,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Get token and optional cookies
+# Get token
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 if not TOKEN:
     raise ValueError("No TELEGRAM_TOKEN environment variable set!")
 
-# Optional: YouTube cookies to bypass bot detection
-YOUTUBE_COOKIES = os.environ.get("YOUTUBE_COOKIES", "")
-
 YOUTUBE_URL_REGEX = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})'
-
-# Free proxy list - these rotate to avoid IP bans
-FREE_PROXIES = [
-    # We'll fetch these dynamically from a free proxy API
-]
-
-async def get_working_proxy():
-    """Fetch a working proxy from free proxy APIs"""
-    try:
-        # Try multiple free proxy sources
-        proxy_urls = [
-            'https://api.proxyscrape.com/v2/?request=get&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all',
-            'https://www.proxy-list.download/api/v1/get?type=http',
-        ]
-        
-        for url in proxy_urls:
-            try:
-                response = await asyncio.to_thread(requests.get, url, timeout=5)
-                if response.status_code == 200:
-                    proxies = response.text.strip().split('\n')
-                    if proxies:
-                        # Return a random proxy from the list
-                        proxy = random.choice(proxies[:10])  # Use first 10 for speed
-                        return f'http://{proxy.strip()}'
-            except:
-                continue
-        
-        return None
-    except Exception as e:
-        logger.error(f"Error fetching proxy: {e}")
-        return None
-
-def get_cookies_path():
-    """Create a temporary cookies file from environment variable if provided"""
-    if not YOUTUBE_COOKIES:
-        return None
-    
-    # Create a temporary file with the cookies
-    cookies_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt')
-    cookies_file.write(YOUTUBE_COOKIES)
-    cookies_file.close()
-    return cookies_file.name
 
 # --- Utility Functions ---
 async def get_video_info(url: str):
     """Uses yt-dlp to extract video info without downloading."""
     
-    # Try to get a working proxy
-    proxy = await get_working_proxy()
-    
     ydl_opts = {
-        'quiet': False,
-        'no_warnings': False,
+        'quiet': True,
+        'no_warnings': True,
+        # Use tv_embedded client - designed to bypass restrictions
         'extractor_args': {
             'youtube': {
-                'player_client': ['ios', 'mweb', 'android'],
+                'player_client': ['tv_embedded'],
             }
         },
-        'sleep_interval': 1,
-        'max_sleep_interval': 3,
     }
-    
-    # Add proxy if available
-    if proxy:
-        ydl_opts['proxy'] = proxy
-        logger.info(f"Using proxy: {proxy}")
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -110,42 +56,22 @@ async def get_video_info(url: str):
             return info
     except Exception as e:
         logger.error(f"Error extracting info for {url}: {e}")
-        # If failed with proxy, try without it
-        if proxy:
-            logger.info("Retrying without proxy...")
-            ydl_opts.pop('proxy', None)
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = await asyncio.to_thread(ydl.extract_info, url, download=False)
-                    return info
-            except Exception as e2:
-                logger.error(f"Retry failed: {e2}")
         return None
 
 async def download_media(url: str, video_id: str, format_type: str, temp_dir: str):
     """Downloads and processes the video/audio. Returns the path to the final file."""
     base_filename = os.path.join(temp_dir, video_id)
     
-    # Try to get a working proxy
-    proxy = await get_working_proxy()
-    
-    # Base options for bypassing bot detection
+    # Base options
     base_opts = {
-        'quiet': False,
-        'no_warnings': False,
+        'quiet': True,
+        'no_warnings': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['ios', 'mweb', 'android'],
+                'player_client': ['tv_embedded'],
             }
         },
-        'sleep_interval': 1,
-        'max_sleep_interval': 3,
     }
-    
-    # Add proxy if available
-    if proxy:
-        base_opts['proxy'] = proxy
-        logger.info(f"Using proxy for download: {proxy}")
     
     if format_type == 'audio':
         ydl_opts = {
@@ -187,23 +113,6 @@ async def download_media(url: str, video_id: str, format_type: str, temp_dir: st
             return None
     except Exception as e:
         logger.error(f"Error downloading {url} as {format_type}: {e}")
-        # If failed with proxy, try without it
-        if proxy:
-            logger.info("Retrying download without proxy...")
-            ydl_opts.pop('proxy', None)
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    await asyncio.to_thread(ydl.download, [url])
-                
-                if os.path.exists(final_path):
-                    return final_path
-                else:
-                    for f in os.listdir(temp_dir):
-                        if f.startswith(video_id) and f.endswith(('.mp3', '.mp4')):
-                            os.rename(os.path.join(temp_dir, f), final_path)
-                            return final_path
-            except Exception as e2:
-                logger.error(f"Retry download failed: {e2}")
         return None
 
 # --- Bot Command Handlers ---

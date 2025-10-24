@@ -1,5 +1,5 @@
 python-telegram-bot
-yt-dlp>=2024.10.22
+pytubefix
 python-dotenv
 Flask
 gunicorn

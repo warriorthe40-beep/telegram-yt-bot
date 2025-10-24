@@ -8,8 +8,7 @@ import asyncio
 import tempfile
 import threading
 import requests
-import random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -18,8 +17,9 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-import yt_dlp
 from flask import Flask, request
+from pytubefix import YouTube
+from pytubefix.cli import on_progress
 
 # Configure logging
 logging.basicConfig(
@@ -28,91 +28,79 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Get token
+# Get tokens
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
+
 if not TOKEN:
     raise ValueError("No TELEGRAM_TOKEN environment variable set!")
+if not YOUTUBE_API_KEY:
+    raise ValueError("No YOUTUBE_API_KEY environment variable set!")
 
 YOUTUBE_URL_REGEX = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})'
 
 # --- Utility Functions ---
-async def get_video_info(url: str):
-    """Uses yt-dlp to extract video info without downloading."""
-    
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        # Use tv_embedded client - designed to bypass restrictions
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['tv_embedded'],
-            }
-        },
-    }
-    
+async def get_video_info(video_id: str):
+    """Uses YouTube Data API to get video information"""
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = await asyncio.to_thread(ydl.extract_info, url, download=False)
-            return info
+        api_url = f"https://www.googleapis.com/youtube/v3/videos"
+        params = {
+            'part': 'snippet,contentDetails',
+            'id': video_id,
+            'key': YOUTUBE_API_KEY
+        }
+        
+        response = await asyncio.to_thread(requests.get, api_url, params=params, timeout=10)
+        data = response.json()
+        
+        if 'items' in data and len(data['items']) > 0:
+            item = data['items'][0]
+            return {
+                'title': item['snippet']['title'],
+                'duration': item['contentDetails']['duration']
+            }
+        return None
     except Exception as e:
-        logger.error(f"Error extracting info for {url}: {e}")
+        logger.error(f"Error fetching video info: {e}")
         return None
 
 async def download_media(url: str, video_id: str, format_type: str, temp_dir: str):
-    """Downloads and processes the video/audio. Returns the path to the final file."""
-    base_filename = os.path.join(temp_dir, video_id)
-    
-    # Base options
-    base_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['tv_embedded'],
-            }
-        },
-    }
-    
-    if format_type == 'audio':
-        ydl_opts = {
-            **base_opts,
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-            'outtmpl': f"{base_filename}.%(ext)s",
-        }
-        final_path = f"{base_filename}.mp3"
-    else:  # video
-        ydl_opts = {
-            **base_opts,
-            'format': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best[height<=720]',
-            'postprocessors': [{
-                'key': 'FFmpegVideoConvertor',
-                'preferedformat': 'mp4',
-            }],
-            'outtmpl': f"{base_filename}.%(ext)s",
-        }
-        final_path = f"{base_filename}.mp4"
-
+    """Downloads video/audio using pytubefix"""
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            await asyncio.to_thread(ydl.download, [url])
+        logger.info(f"Starting download for {url}")
         
-        if os.path.exists(final_path):
-            return final_path
+        # Use pytubefix to download
+        yt = await asyncio.to_thread(YouTube, url, on_progress_callback=on_progress)
+        
+        if format_type == 'audio':
+            # Get audio stream
+            stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
+            if not stream:
+                logger.error("No audio stream found")
+                return None
+            
+            # Download
+            output_file = await asyncio.to_thread(stream.download, output_path=temp_dir, filename=f"{video_id}.mp3")
+            logger.info(f"Audio downloaded: {output_file}")
+            return output_file
         else:
-            # Sometimes the file has a slightly different extension
-            for f in os.listdir(temp_dir):
-                if f.startswith(video_id) and f.endswith(('.mp3', '.mp4')):
-                    os.rename(os.path.join(temp_dir, f), final_path)
-                    return final_path
-            logger.error(f"Expected file {final_path} not found after download.")
-            return None
+            # Get video stream (720p or best available)
+            stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
+            if not stream:
+                # Fallback to any mp4
+                stream = yt.streams.filter(file_extension='mp4').first()
+            
+            if not stream:
+                logger.error("No video stream found")
+                return None
+            
+            # Download
+            output_file = await asyncio.to_thread(stream.download, output_path=temp_dir, filename=f"{video_id}.mp4")
+            logger.info(f"Video downloaded: {output_file}")
+            return output_file
+            
     except Exception as e:
-        logger.error(f"Error downloading {url} as {format_type}: {e}")
+        logger.error(f"Error downloading {url}: {e}", exc_info=True)
         return None
 
 # --- Bot Command Handlers ---
@@ -136,7 +124,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             video_id = match.group(1)
             url = f"https://www.youtube.com/watch?v={video_id}"
             
-            # Store URL in user_data (don't reassign, just update)
+            # Store URL in user_data
             context.user_data[video_id] = url
             
             logger.info(f"Found YouTube link: {url}")
@@ -178,19 +166,19 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await query.edit_message_text(f"Processing... this may take a moment. ⏳")
 
     try:
-        info = await get_video_info(url)
+        # Get video info from YouTube API
+        info = await get_video_info(video_id)
         if not info:
             await query.edit_message_text("Error: Could not get video information.")
             return
 
         title = info.get('title', 'Downloaded Media')
-        duration = int(info.get('duration', 0))
         
         with tempfile.TemporaryDirectory() as temp_dir:
             final_path = await download_media(url, video_id, format_type, temp_dir)
             
             if not final_path:
-                await query.edit_message_text("Error: Failed to download or process the file.")
+                await query.edit_message_text("Error: Failed to download the file.")
                 return
 
             file_size = os.path.getsize(final_path)
@@ -204,24 +192,17 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
             await query.edit_message_text(f"Uploading {format_type}...")
             
-            # Use context managers for file handles
-            if format_type == 'audio':
-                with open(final_path, 'rb') as f:
+            # Send the file
+            with open(final_path, 'rb') as f:
+                if format_type == 'audio':
                     await update.effective_message.reply_audio(
                         audio=f,
-                        title=title,
-                        duration=duration
+                        title=title
                     )
-            else:
-                width = info.get('width', 0)
-                height = info.get('height', 0)
-                with open(final_path, 'rb') as f:
+                else:
                     await update.effective_message.reply_video(
                         video=f,
-                        title=title,
-                        duration=duration,
-                        width=width,
-                        height=height
+                        caption=title
                     )
             
             await query.delete_message()
@@ -238,7 +219,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     """Log errors caused by updates."""
     logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
     
-    # Try to notify the user
     if isinstance(update, Update) and update.effective_message:
         try:
             await update.effective_message.reply_text(
@@ -264,7 +244,6 @@ def init_bot():
     if not hasattr(app, 'bot_initialized'):
         logger.info("Initializing bot on first request...")
         try:
-            # Run initialization in the app's own event loop
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(ptb_app.initialize())
@@ -284,7 +263,6 @@ def webhook():
     try:
         logger.info("Webhook endpoint hit")
         
-        # Get the update
         update_json = request.get_json(force=True)
         if not update_json:
             logger.error("No JSON data in webhook request")
@@ -292,10 +270,9 @@ def webhook():
         
         logger.info(f"Received update: {update_json.get('update_id', 'unknown')}")
         
-        # Process the update
         update = Update.de_json(update_json, ptb_app.bot)
         
-        # Check if there's already a running loop
+        # Get or create event loop
         try:
             loop = asyncio.get_event_loop()
             if loop.is_closed():
@@ -305,7 +282,6 @@ def webhook():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         
-        # Process the update in this loop
         loop.run_until_complete(ptb_app.process_update(update))
         logger.info(f"Update {update.update_id} processed successfully")
         
@@ -313,15 +289,13 @@ def webhook():
         
     except Exception as e:
         logger.error(f"Error processing webhook: {e}", exc_info=True)
-        # Return 200 anyway to prevent Telegram from retrying
         return "error logged", 200
 
 @app.route("/set_webhook")
 def set_webhook():
     """Set the webhook URL for Telegram to send updates to"""
     try:
-        # Koyeb provides the app URL via KOYEB_PUBLIC_URL or we can construct it
-        render_url = os.environ.get("KOYEB_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "https://delight-yt-bot.onrender.com"
+        render_url = os.environ.get("RENDER_EXTERNAL_URL") or "https://delight-yt-bot.onrender.com"
         
         webhook_url = f"{render_url}/{TOKEN}"
         telegram_api_url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
@@ -355,6 +329,5 @@ def set_webhook():
         return f"Internal server error: {str(e)}", 500
 
 if __name__ == "__main__":
-    # Get port from environment variable (Koyeb uses PORT)
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)

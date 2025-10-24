@@ -70,7 +70,8 @@ async def download_media(url: str, video_id: str, format_type: str, temp_dir: st
         logger.info(f"Starting download for {url}")
         
         # Use pytubefix to download
-        yt = await asyncio.to_thread(YouTube, url, on_progress_callback=on_progress)
+        # --- THIS IS THE EDITED LINE ---
+        yt = await asyncio.to_thread(YouTube, url, client='WEB', on_progress_callback=on_progress)
         
         if format_type == 'audio':
             # Get audio stream

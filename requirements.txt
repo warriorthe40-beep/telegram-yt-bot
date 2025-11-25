@@ -1,0 +1,15 @@
+# Telegram Bot Framework (async version - more reliable)
+python-telegram-bot==21.3
+
+# YouTube Downloader
+yt-dlp==2024.8.6
+
+# Web Server for Keep-Alive
+Flask==3.0.3
+gunicorn==22.0.0
+
+# HTTP requests (dependency, but good to pin)
+requests==2.32.3
+
+# For webhook support (optional but useful)
+aiohttp==3.9.5

@@ -1,16 +1,13 @@
-# Render Blueprint Configuration
-# This file helps with one-click deployment on Render
+# Render Blueprint - Docker Deployment
+# Using Docker to ensure FFmpeg is installed
 
 services:
   - type: web
     name: youtube-telegram-bot
-    runtime: python
+    runtime: docker
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    dockerfilePath: ./Dockerfile
     envVars:
       - key: BOT_TOKEN
-        sync: false  # You'll set this manually in the Render dashboard
-      - key: PYTHON_VERSION
-        value: 3.11.9
+        sync: false
     healthCheckPath: /health
